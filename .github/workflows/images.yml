@@ -25,7 +25,7 @@ jobs:
       # previous run if it's on the same commit SHA. This prevents a run for a
       # commit push from cancelling a previous commit push's build, since we
       # want an image built and tagged for each commit.
-      group: build-images-${{ matrix.image }}-${{ github.event.inputs.ref }}
+      group: build-images-${{ matrix.image }}
       cancel-in-progress: true
 
     permissions:
