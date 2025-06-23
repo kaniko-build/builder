@@ -7,6 +7,10 @@ on:
       platforms_override:
         type: string
         description: Platform override (ex linux/amd64,linux/arm64,linux/s390x,linux/ppc64le)
+      platforms:
+        type: string
+        description: JSON encoded platforms (ex ["linux/amd64","linux/arm64","linux/s390x","linux/ppc64le"])
+        default: '["linux/amd64","linux/arm64","linux/s390x","linux/ppc64le"]'
       repository:
         type: string
         default: chainguard-dev/kaniko
@@ -25,7 +29,7 @@ jobs:
       # previous run if it's on the same commit SHA. This prevents a run for a
       # commit push from cancelling a previous commit push's build, since we
       # want an image built and tagged for each commit.
-      group: build-images-${{ matrix.image }}
+      group: build-images-${{ matrix.image }}-${{ matrix.platforms }}
       cancel-in-progress: true
 
     permissions:
@@ -44,31 +48,29 @@ jobs:
           - executor-slim
           - warmer
 
+        platforms: ${{ fromJson(github.event.inputs.platforms) }}
+
         include:
           - image: executor
             target: kaniko-executor
-            platforms: linux/amd64,linux/arm64,linux/s390x,linux/ppc64le
             image-name: executor
             tag-suffix: ""
             release-tag: latest
 
           - image: executor-debug
             target: kaniko-debug
-            platforms: linux/amd64,linux/arm64,linux/s390x
             image-name: executor
             tag-suffix: "-debug"
             release-tag: debug
 
           - image: executor-slim
             target: kaniko-slim
-            platforms: linux/amd64,linux/arm64,linux/s390x,linux/ppc64le
             image-name: executor
             tag-suffix: "-slim"
             release-tag: slim
 
           - image: warmer
             target: kaniko-warmer
-            platforms: linux/amd64,linux/arm64,linux/s390x,linux/ppc64le
             image-name: warmer
             tag-suffix: ""
             release-tag: latest
@@ -88,16 +90,18 @@ jobs:
           INPUT_PLATFORMS: ${{ github.event.inputs.platforms_override }}
         run: |
           event="${{ github.event_name }}"
+          PLATFORM=""
           if [[ "$event" == "pull_request" ]]; then
-            echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
+            PLATFORM=linux/amd64
           else
-            platforms="${{ matrix.platforms }}"
-            echo "platforms=${platforms}" >> $GITHUB_OUTPUT
+            PLATFORM="${{ matrix.platforms }}"
           fi
           if [[ -n "$INPUT_PLATFORMS" ]]; then
             echo "use overridden platform ($INPUT_PLATFORMS)"
-            echo "platforms=$INPUT_PLATFORMS" >> $GITHUB_OUTPUT
+            PLATFORM=$INPUT_PLATFORMS
           fi
+          echo "platforms=$PLATFORM" | tee -a $GITHUB_OUTPUT
+          echo "san-platforms=${PLATFORM/\//-}" | tee -a $GITHUB_OUTPUT
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -146,7 +150,7 @@ jobs:
 
       - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
         with:
-          platforms: ${{ matrix.platforms }}
+          platforms: ${{ steps.platforms.outputs.platforms }}
 
       - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
@@ -156,8 +160,8 @@ jobs:
           context: .
           file: ./deploy/Dockerfile
           platforms: ${{ steps.platforms.outputs.platforms }}
-          outputs: type=oci,dest=${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}.tar
-          tags: ${{ steps.vars.outputs.image-base }}${{ matrix.image-name }}:${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}
+          outputs: type=docker,dest=${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}=${{ steps.platforms.outputs.san-platforms }}.tar
+          tags: ${{ steps.vars.outputs.image-base }}${{ matrix.image-name }}:${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}-${{ steps.platforms.outputs.san-platforms }}
           no-cache-filters: certs
           # https://github.com/docker/build-push-action/blob/master/docs/advanced/cache.md#github-cache
           cache-from: type=gha
@@ -167,8 +171,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.vars.outputs.san-origin-repo }}=${{ steps.vars.outputs.tag-base }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}
-          path: ${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}.tar
+          name: ${{ steps.vars.outputs.san-origin-repo }}=${{ steps.vars.outputs.tag-base }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}=${{ steps.platforms.outputs.san-platforms }}
+          path: ${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}=${{ steps.platforms.outputs.san-platforms }}.tar
 
   publish-images:
     name: "Publish all at once"
@@ -209,8 +213,34 @@ jobs:
 
           docker image ls -a
 
-          for IMAGE in $(docker image ls -a --format="{{.Repository}}:{{.Tag}}"); do
-            docker push $IMAGE
+          PLATFORMS="$(echo '${{ github.event.inputs.platforms }}' | jq -r '.[]')"
+
+          for IMAGE_BASE in \
+              ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/executor:${{ needs.build-images.outputs.tag-base }} \
+              ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/executor:${{ needs.build-images.outputs.tag-base }}-slim \
+              ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/executor:${{ needs.build-images.outputs.tag-base }}-debug \
+              ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/warmer:${{ needs.build-images.outputs.tag-base }} \
+              ; do
+
+            PLATFORM_SUFFIX=()
+            for PLATFORM in $PLATFORMS; do
+              IFS=/ read -r OS ARCH <<< "$PLATFORM"
+              PLATFORM_SUFFIX+=($IMAGE_BASE-$OS-$ARCH)
+            done
+
+            # Create main manifest
+            docker manifest create $IMAGE_BASE \
+                "${PLATFORM_SUFFIX[@]}"
+
+            # Annotate manifest parts
+            for PLATFORM in $PLATFORMS; do
+              IFS=/ read -r OS ARCH <<< "$PLATFORM"
+              docker manifest annotate $IMAGE_BASE $IMAGE_BASE-$OS-$ARCH --os $OS --arch $ARCH
+            done
+
+            # Push the result
+            docker manifest push $IMAGE_BASE
+
           done
 
           cat << EOF | gh release create "${{ needs.build-images.outputs.origin-repo }}/${{ needs.build-images.outputs.tag-base }}" \
@@ -218,6 +248,12 @@ jobs:
             --title "${{ needs.build-images.outputs.origin-repo }} ${{ needs.build-images.outputs.tag-base }}" \
             -F - \
             ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar
+
+          Architecture available:
+          \`\`\`
+          ${PLATFORMS[@]}
+          \`\`\`
+
           Tar archives for \`docker load --input <file>\` linked ot the release.
           Images available as artifacts:
             - **Executor**: https://github.com/${{ github.repository }}/pkgs/container/dist%2F${{ needs.build-images.outputs.san-origin-repo }}%2Fexecutor
