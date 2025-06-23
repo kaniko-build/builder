@@ -156,7 +156,7 @@ jobs:
           context: .
           file: ./deploy/Dockerfile
           platforms: ${{ steps.platforms.outputs.platforms }}
-          outputs: type=docker,dest=${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}.tar
+          outputs: type=oci,dest=${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}.tar
           tags: ${{ steps.vars.outputs.image-base }}${{ matrix.image-name }}:${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}
           no-cache-filters: certs
           # https://github.com/docker/build-push-action/blob/master/docs/advanced/cache.md#github-cache
