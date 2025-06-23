@@ -73,6 +73,10 @@ jobs:
             tag-suffix: ""
             release-tag: latest
 
+    outputs:
+      san-origin-repo: ${{ steps.vars.outputs.san-origin-repo }}
+      origin-repo: ${{ github.event.inputs.repository }}
+      tag-base: ${{ steps.vars.outputs.tag-base }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
@@ -129,8 +133,9 @@ jobs:
             echo tag-base="$REF-$(git rev-parse --short HEAD 2>/dev/null)" >> $GITHUB_OUTPUT
           fi
           echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo image-base=ghcr.io/${{ github.repository_owner }}/dist/"$(echo -n ${{ github.event.inputs.repository }} | tr -c a-z - )"/ >> $GITHUB_OUTPUT
-
+          SANITIZED_ORIGIN_REPO=$(echo -n ${{ github.event.inputs.repository }} | tr -c a-z - )
+          echo image-base=ghcr.io/${{ github.repository_owner }}/dist/"${SANITIZED_ORIGIN_REPO}"/ >> $GITHUB_OUTPUT
+          echo san-origin-repo=$SANITIZED_ORIGIN_REPO >> $GITHUB_OUTPUT
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -146,15 +151,85 @@ jobs:
       - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
       - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        id: build-and-push
+        id: build
         with:
           context: .
           file: ./deploy/Dockerfile
           platforms: ${{ steps.platforms.outputs.platforms }}
-          push: true
-          tags: ${{ steps.vars.outputs.image-base }}${{ matrix.image-name }}:${{ steps.vars.outputs.tag-base }}${{ matrix.tag-tag-suffix }}
+          outputs: type=docker,dest=${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}.tar
+          tags: ${{ steps.vars.outputs.image-base }}${{ matrix.image-name }}:${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}
           no-cache-filters: certs
           # https://github.com/docker/build-push-action/blob/master/docs/advanced/cache.md#github-cache
           cache-from: type=gha
           cache-to: type=gha,mode=max
           target: ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.san-origin-repo }}=${{ steps.vars.outputs.tag-base }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}
+          path: ${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}.tar
+
+  publish-images:
+    name: "Publish all at once"
+    needs: build-images
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ needs.build-images.outputs.san-origin-repo }}=${{ needs.build-images.outputs.tag-base }}=*
+          merge-multiple: true
+          path: ${{ runner.temp }}
+
+      - name: Load images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for IMAGE_TAR in ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar; do
+            docker load --input ${IMAGE_TAR}
+          done
+
+          docker image ls -a
+
+          for IMAGE in $(docker image ls -a --format="{{.Repository}}:{{.Tag}}"); do
+            docker push $IMAGE
+          done
+
+          cat << EOF | gh release create "${{ needs.build-images.outputs.origin-repo }}/${{ needs.build-images.outputs.tag-base }}" \
+            --notes "${{ needs.build-images.outputs.origin-repo }} ${{ needs.build-images.outputs.tag-base }}" \
+            --title "${{ needs.build-images.outputs.origin-repo }} ${{ needs.build-images.outputs.tag-base }}" \
+            -F - \
+            ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar
+          Tar archives for \`docker load --input <file>\` linked ot the release.
+          Images available as artifacts:
+            - **Executor**: https://github.com/${{ github.repository }}/pkgs/container/dist%2F${{ needs.build-images.outputs.san-origin-repo }}%2Fexecutor
+            - **Warmer**: https://github.com/${{ github.repository }}/pkgs/container/dist%2F${{ needs.build-images.outputs.san-origin-repo }}%2Fwarmer
+
+          Or for \`docker pull\`:
+            - \`docker pull ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/executor:${{ needs.build-images.outputs.tag-base }}\`
+            - \`docker pull ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/executor:${{ needs.build-images.outputs.tag-base }}-slim\`
+            - \`docker pull ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/executor:${{ needs.build-images.outputs.tag-base }}-debug\`
+            - \`docker pull ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/warmer:${{ needs.build-images.outputs.tag-base }}\`
+          EOF
+
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+            name: ${{ needs.build-images.outputs.san-origin-repo }}=${{ needs.build-images.outputs.tag-base }}=*
