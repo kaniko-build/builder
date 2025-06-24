@@ -160,10 +160,13 @@ jobs:
 
       - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         id: build
+        env:
+          BUILDX_NO_DEFAULT_ATTESTATIONS: 1
         with:
           context: .
           file: ./deploy/Dockerfile
           platforms: ${{ steps.platforms.outputs.platforms }}
+          push: true
           outputs: type=docker,dest=${{ runner.temp }}/${{ steps.vars.outputs.san-origin-repo }}=${{ matrix.image-name }}=${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}=${{ steps.platforms.outputs.san-platforms }}.tar
           tags: ${{ steps.vars.outputs.image-base }}${{ matrix.image-name }}:${{ steps.vars.outputs.tag-base }}${{ matrix.tag-suffix }}-${{ steps.platforms.outputs.san-platforms }}
           no-cache-filters: certs
@@ -211,8 +214,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          [ "${{ github.event.inputs.verbose_publish }}" = "true" ] && set -x
-
+          DOCKER_FLAGS=""
+          [ "${{ github.event.inputs.verbose_publish }}" = "true" ] && set -x && DOCKER_FLAGS="-D"
           for IMAGE_TAR in ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar; do
             docker load --input ${IMAGE_TAR}
           done
@@ -235,7 +238,7 @@ jobs:
             done
 
             # Create main manifest
-            docker manifest create $IMAGE_BASE \
+            docker $DOCKER_FLAGS manifest create $IMAGE_BASE \
                 "${PLATFORM_SUFFIX[@]}"
 
             # Annotate manifest parts
