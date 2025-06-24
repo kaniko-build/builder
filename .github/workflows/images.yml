@@ -18,6 +18,10 @@ on:
       ref:
         type: string
         description: Reference to build (branch, tag, sha) [semver must start with v]
+      verbose_publish:
+        type: boolean
+        default: false
+        description: enable verbosity at publish stage
 
 permissions: {}
 
@@ -207,6 +211,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          [ "${{ github.event.inputs.verbose_publish }}" = "true" ] && set -x
+
           for IMAGE_TAR in ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar; do
             docker load --input ${IMAGE_TAR}
           done
