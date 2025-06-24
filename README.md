@@ -7,4 +7,4 @@ Actions are taken from the original build process with few changes to adapt to g
 Results are available at:
 
 * Warmer: <https://github.com/kaniko-build/builder/pkgs/container/dist%2Fchainguard-dev-kaniko%2Fwarmer>
-* Executor: <https://github.com/kaniko-build/builder/pkgs/container/dist%2Fchainguard-dev-kaniko%2Fwarmer>
+* Executor: <https://github.com/kaniko-build/builder/pkgs/container/dist%2Fchainguard-dev-kaniko%2Fexecutor>
