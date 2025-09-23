@@ -230,6 +230,7 @@ jobs:
               ghcr.io/${{ github.repository_owner }}/dist/${{ needs.build-images.outputs.san-origin-repo }}/warmer:${{ needs.build-images.outputs.tag-base }} \
               ; do
 
+            LATEST=${IMAGE_BASE/:${{ needs.build-images.outputs.tag-base }}/:latest}
             PLATFORM_SUFFIX=()
             for PLATFORM in $PLATFORMS; do
               IFS=/ read -r OS ARCH <<< "$PLATFORM"
@@ -237,17 +238,19 @@ jobs:
             done
 
             # Create main manifest
-            docker $DOCKER_FLAGS manifest create $IMAGE_BASE \
-                "${PLATFORM_SUFFIX[@]}"
+            docker $DOCKER_FLAGS manifest create $IMAGE_BASE "${PLATFORM_SUFFIX[@]}"
+            docker $DOCKER_FLAGS manifest create $LATEST     "${PLATFORM_SUFFIX[@]}"
 
             # Annotate manifest parts
             for PLATFORM in $PLATFORMS; do
               IFS=/ read -r OS ARCH <<< "$PLATFORM"
               docker manifest annotate $IMAGE_BASE $IMAGE_BASE-$OS-$ARCH --os $OS --arch $ARCH
+              docker manifest annotate $LATEST     $IMAGE_BASE-$OS-$ARCH --os $OS --arch $ARCH
             done
 
             # Push the result
             docker manifest push $IMAGE_BASE
+            docker manifest push $LATEST
 
           done
 
