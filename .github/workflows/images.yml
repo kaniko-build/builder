@@ -13,7 +13,7 @@ on:
         default: '["linux/amd64","linux/arm64","linux/s390x","linux/ppc64le"]'
       repository:
         type: string
-        default: chainguard-dev/kaniko
+        default: osscontainertools/kaniko
         description: Repository to build from
       ref:
         type: string
