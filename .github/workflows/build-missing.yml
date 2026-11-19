@@ -1,0 +1,35 @@
+name: Build missing releases
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build-missing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      actions: write # dispatch and watch images.yml runs
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - osscontainertools/kaniko
+          - chainguard-forks/kaniko
+    # One catch-up per source at a time: each publish moves :latest.
+    concurrency:
+      group: build-missing-${{ matrix.source }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Dispatch builds for missing releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANIKO_SOURCES: ${{ matrix.source }}
+        run: ./scripts/build-missing.sh --dispatch
