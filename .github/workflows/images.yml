@@ -30,8 +30,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      attestations: write
-      id-token: write
 
     runs-on: ubuntu-latest
     strategy:
@@ -179,8 +177,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-      attestations: write
-      id-token: write
+      id-token: write # keyless cosign, only this job holds it
 
     steps:
 
@@ -200,9 +197,13 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}
 
+      - uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
       - name: Load images
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUER: https://token.actions.githubusercontent.com
+          IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
         run: |
           DOCKER_FLAGS=""
           [ "${{ github.event.inputs.verbose_publish }}" = "true" ] && set -x && DOCKER_FLAGS="-D"
@@ -239,24 +240,36 @@ jobs:
               docker manifest annotate $LATEST     $IMAGE_BASE-$OS-$ARCH --os $OS --arch $ARCH
             done
 
-            # Push the result
-            docker manifest push $IMAGE_BASE
-            docker manifest push $LATEST
+            # Push the version tag, then sign its manifest list and every platform image under it.
+            DIGEST=$(docker manifest push "$IMAGE_BASE" | tail -n1)
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest from pushing $IMAGE_BASE: $DIGEST"; exit 1; }
+            REPO=${IMAGE_BASE%:*}
+            cosign sign --yes --recursive "$REPO@$DIGEST"
+            cosign verify --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$REPO@$DIGEST" > /dev/null
+            # latest moves only after the signature verifies, and must be the very same list.
+            LATEST_DIGEST=$(docker manifest push "$LATEST" | tail -n1)
+            [[ "$LATEST_DIGEST" == "$DIGEST" ]] || { echo "::error::$LATEST is $LATEST_DIGEST, not the signed $DIGEST"; exit 1; }
 
+          done
+
+          for IMAGE_TAR in ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar; do
+            cosign sign-blob --yes --bundle "$IMAGE_TAR.sigstore.json" "$IMAGE_TAR" > /dev/null
+            cosign verify-blob --bundle "$IMAGE_TAR.sigstore.json" --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$IMAGE_TAR"
           done
 
           cat << EOF | gh release create "${{ needs.build-images.outputs.origin-repo }}/${{ needs.build-images.outputs.tag-base }}" \
             --notes "${{ needs.build-images.outputs.origin-repo }} ${{ needs.build-images.outputs.tag-base }}" \
             --title "${{ needs.build-images.outputs.origin-repo }} ${{ needs.build-images.outputs.tag-base }}" \
             -F - \
-            ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar
+            ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar \
+            ${{ runner.temp }}/${{ needs.build-images.outputs.san-origin-repo }}=*.tar.sigstore.json
 
           Architecture available:
           \`\`\`
           ${PLATFORMS[@]}
           \`\`\`
 
-          Tar archives for \`docker load --input <file>\` linked ot the release.
+          Tar archives for \`docker load --input <file>\` linked ot the release, each with its cosign bundle (\`<file>.sigstore.json\`).
           Images available as artifacts:
             - **Executor**: https://github.com/${{ github.repository }}/pkgs/container/dist%2F${{ needs.build-images.outputs.san-origin-repo }}%2Fexecutor
             - **Warmer**: https://github.com/${{ github.repository }}/pkgs/container/dist%2F${{ needs.build-images.outputs.san-origin-repo }}%2Fwarmer
